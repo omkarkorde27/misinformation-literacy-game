@@ -296,46 +296,57 @@ class BERTFakeNewsDetector:
             return False
     
     def _train_with_cross_validation(self, texts, labels, class_weights, n_folds=5, batch_size=16, 
-                                epochs=10, learning_rate=2e-5, random_state=42, use_augmentation=True):
-        """Train model using cross-validation for better evaluation"""
-        # Convert inputs to numpy arrays to ensure proper indexing
+                              epochs=10, learning_rate=2e-5, random_state=42, use_augmentation=True):
+        """Train model using simplified manual cross-validation for better robustness"""
+        # Convert inputs to numpy arrays
         texts = np.array(texts)
         labels = np.array(labels)
         
-        # Initialize cross-validation
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        # Create indices array
+        indices = np.arange(len(texts))
         
+        # Initialize fold results storage
         fold_results = []
         best_overall_f1 = 0
         best_fold_model = None
         
-        # Iterate through folds
-        for fold, (train_idx, test_idx) in enumerate(skf.split(texts, labels)):
+        # Setup base random state for reproducibility while ensuring different splits
+        base_random_state = random_state
+        
+        # Create n folds manually
+        for fold in range(n_folds):
             print(f"\n--- Fold {fold+1}/{n_folds} ---")
             
-            # Get the training and test data for this fold
-            fold_train_texts = texts[train_idx]
-            fold_train_labels = labels[train_idx]
-            fold_test_texts = texts[test_idx]
-            fold_test_labels = labels[test_idx]
+            # Use a different random state for each fold
+            fold_random_state = base_random_state + fold
             
-            # Split train indices further to get validation set
-            train_texts, val_texts, train_labels, val_labels = train_test_split(
-                fold_train_texts, 
-                fold_train_labels,
-                test_size=0.15,  # 15% for validation
-                random_state=random_state + fold,  # Different random state for each fold
-                stratify=fold_train_labels
+            # Split data into train and test
+            train_indices, test_indices, train_fold_labels, test_fold_labels = train_test_split(
+                indices, labels, test_size=1/n_folds, random_state=fold_random_state, 
+                stratify=labels
             )
             
-            test_texts = fold_test_texts
-            test_labels = fold_test_labels
+            # Get actual train and test data
+            train_fold_texts = texts[train_indices]
+            test_fold_texts = texts[test_indices]
+            
+            # Further split training data to get a validation set
+            train_indices_final, val_indices, train_labels_final, val_labels = train_test_split(
+                train_indices, train_fold_labels, test_size=0.15, 
+                random_state=fold_random_state, stratify=train_fold_labels
+            )
+            
+            # Get final training and validation data
+            train_texts = texts[train_indices_final]
+            val_texts = texts[val_indices]
+            train_labels = labels[train_indices_final]
+            val_labels = labels[val_indices]
+            test_texts = test_fold_texts
+            test_labels = test_fold_labels
             
             print(f"Training set: {len(train_texts)} samples")
             print(f"Validation set: {len(val_texts)} samples")
             print(f"Test set: {len(test_texts)} samples")
-        
-        # Continue with the rest of the cross-validation training code...
             
             # Create datasets
             train_dataset = NewsDataset(
@@ -388,6 +399,8 @@ class BERTFakeNewsDetector:
             early_stopping_patience = 3
             early_stopping_counter = 0
             training_stats = []
+            
+        # Continue with the training loop and everything else...
             
             # Training loop
             for epoch in range(epochs):
@@ -806,3 +819,38 @@ class BERTFakeNewsDetector:
         self.test_labels = test_labels
         
         return True
+    
+    def save_model(self, output_dir="bert_fake_news_model"):
+        """Save the trained model to a directory"""
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save the model state dictionary
+            torch.save(self.model.state_dict(), os.path.join(output_dir, 'model.pt'))
+            
+            # Save the tokenizer
+            self.tokenizer.save_pretrained(output_dir)
+            
+            # Save configuration
+            config = {
+                'model_type': 'BERT_Improved',
+                'max_length': self.max_length,
+                'date_saved': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            with open(os.path.join(output_dir, 'config.json'), 'w') as f:
+                json.dump(config, f)
+            
+            # Save training stats if available
+            if hasattr(self, 'training_stats'):
+                with open(os.path.join(output_dir, 'training_stats.json'), 'w') as f:
+                    json.dump(self.training_stats, f)
+            
+            print(f"Model successfully saved to {output_dir}")
+            return True
+        except Exception as e:
+            print(f"Error saving model: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
