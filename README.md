@@ -1,118 +1,146 @@
-# Explainable Fake News Detection System
+# BERT Fake News Detection with Groq API Explainability
 
-This repository contains a complete Python-based system for detecting and explaining fake news classifications. The system uses machine learning to analyze news content and provides explanations for its predictions.
+This project enhances a BERT-based fake news detection system with explainability features powered by the Groq API. After classifying text as real or fake news, the system generates a human-readable explanation of the classification.
 
 ## Features
 
-- Text preprocessing and feature extraction
-- ML-based classification (Random Forest and Logistic Regression options)
-- Explainable AI using LIME (Local Interpretable Model-agnostic Explanations)
-- User-friendly web interface built with Streamlit
-- Support for both training new models and using pre-trained models
+- **BERT-based Classification**: Detect fake news with high accuracy using a fine-tuned BERT model
+- **Groq API Integration**: Generate explanations for why text was classified as real or fake news
+- **Feature Analysis**: Extracts and analyzes statistical patterns in text that may indicate fake news
+- **Streamlit Web Interface**: User-friendly interface for text analysis and visualization
+- **Command-line Testing Tool**: Test the integration with sample or custom texts
 
-## Installation
+## Setup
+
+### Prerequisites
+
+- Python 3.8+
+- PyTorch
+- Transformers library
+- Streamlit (for web interface)
+- A Groq API key (sign up at [console.groq.com](https://console.groq.com/signup))
+
+### Installation
 
 1. Clone this repository
-2. Install the required packages:
-
-```bash
-pip install pandas numpy scikit-learn nltk lime shap streamlit matplotlib seaborn
-```
-
+2. Install dependencies:
+   ```bash
+   pip install torch transformers streamlit nltk scikit-learn matplotlib seaborn pandas requests python-dotenv
+   ```
 3. Download the NLTK resources:
+   ```python
+   import nltk
+   nltk.download('punkt')
+   nltk.download('stopwords')
+   nltk.download('wordnet')
+   ```
 
-```python
-import nltk
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
-```
+### Set up Groq API
+
+1. Sign up for an account at [console.groq.com](https://console.groq.com/signup)
+2. Generate an API key from your Groq dashboard
+3. Set up your API key in one of these ways:
+   - Create a `.env` file with `GROQ_API_KEY=your_api_key_here`
+   - Set an environment variable: `export GROQ_API_KEY=your_api_key_here`
+   - Pass the API key directly to the scripts using `--api-key` parameter
 
 ## Usage
 
-### Running the Web Interface
+### Web Interface
 
-To start the Streamlit web interface:
+Run the Streamlit app to analyze news text via a user-friendly interface:
 
 ```bash
-streamlit run fake_news_detection_system.py
+streamlit run streamlit_groq_integration.py
 ```
 
-This will open a web browser with the application interface where you can input news content for analysis.
+The web interface allows you to:
+- Enter news text to analyze
+- View classification results with confidence scores
+- See AI-generated explanations from Groq (if API key is provided)
+- Examine text features that contributed to the classification
 
-### Using the Datasets
+### Command Line Testing
 
-Place the datasets in the same directory as the application:
-- merged_dataset.csv
-- structured_fake_news.csv
+Use the test script to quickly analyze texts without the web interface:
 
-The system will first try to use the merged dataset and fall back to the structured dataset if needed.
+```bash
+# Test with sample texts
+python test_groq_integration.py --model-path bert_fake_news_model
 
-### Using the API Programmatically
+# Test with your own text
+python test_groq_integration.py --text "Your news text here" --output results.json
 
-You can also use the detector directly in your Python code:
+# Specify a different Groq model
+python test_groq_integration.py --model llama3-8b-8192 --api-key your_api_key_here
+```
+
+## How Groq API Integration Works
+
+The system follows these steps to generate explanations:
+
+1. The BERT model classifies the input text as "Real News" or "Fake News" with a confidence score
+2. The system extracts statistical features from the text (if the enhanced model is used)
+3. A request is sent to the Groq API with:
+   - The original text
+   - The classification result
+   - The confidence score
+   - Feature importance scores (if available)
+4. The API returns a detailed explanation of why the text was likely classified this way
+5. The explanation is displayed to the user
+
+### API Request Structure
+
+Here's the basic structure of the request sent to Groq's API:
 
 ```python
-from fake_news_detection_system import FakeNewsDetector
+headers = {
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json"
+}
 
-# Initialize the detector with your preferred model type
-detector = FakeNewsDetector(model_type="random_forest")  # or "logistic_regression"
+payload = {
+    "model": "llama3-70b-8192",
+    "messages": [
+        {
+            "role": "system", 
+            "content": "You are an expert in media literacy and fake news detection..."
+        },
+        {
+            "role": "user", 
+            "content": f"The following news text was classified as '{classification}'..."
+        }
+    ],
+    "temperature": 0.3,
+    "max_tokens": 1024
+}
 
-# Train on your dataset
-detector.train("your_dataset.csv")
-
-# Make predictions
-news_text = "Your news text here..."
-label, confidence = detector.predict(news_text)
-print(f"Classification: {label} (Confidence: {confidence:.2%})")
-
-# Get explanations
-explanation_text, _ = detector.explain_prediction(news_text)
-print(f"Explanation: {explanation_text}")
-
-# Save the trained model
-detector.save_model("your_model.pkl")
-
-# Load a pre-trained model
-detector.load_model("your_model.pkl")
+response = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+                       headers=headers, json=payload)
 ```
 
-## System Architecture
+## Available Groq Models
 
-The system consists of several components:
+You can use different Groq models for explanation generation:
 
-1. **Preprocessing Module**: Cleans and normalizes text input
-2. **ML Model**: Classifies news as real or fake
-3. **Explainability Module**: Generates human-understandable explanations
-4. **Web Interface**: Provides user-friendly access to the system
+- `llama3-70b-8192` (default, most powerful)
+- `llama3-8b-8192` (faster, lighter)
+- `mixtral-8x7b-32768` (good for longer contexts)
+- `gemma-7b-it`
 
-## Customization
+Specify the model using the `--model` parameter in the test script or by changing the model in the `GroqExplainer` class.
 
-### Adding New Models
+## Best Practices
 
-You can extend the `FakeNewsDetector` class to support additional model types:
-
-```python
-# In the __init__ method
-if self.model_type == "your_new_model":
-    model = YourNewModelClass()
-```
-
-### Improving Explanations
-
-The explanation system uses LIME by default. You can customize the explanations by modifying the `explain_prediction` method in the `FakeNewsDetector` class.
+- Provide a Groq API key for best results
+- Use explanations as a guide, not as definitive truth
+- Cross-check information with reputable sources
+- Consider the context and source of the news
+- Be aware that AI models have limitations and may occasionally misclassify content
 
 ## Limitations
 
-- The model's accuracy is dependent on the quality and diversity of the training data
-- Very short or ambiguous texts may lead to less reliable classifications
-- Models can exhibit bias present in the training data
-- Always use this tool as an aid rather than the sole determinant of news credibility
-
-## Contributing
-
-Contributions to improve the system are welcome. Please feel free to submit pull requests or open issues for bugs and feature requests.
-
-## License
-
-This project is released under the MIT License.
+- The BERT model analyzes text patterns and cannot fact-check specific claims
+- Performance depends on the training data and may not catch novel misinformation tactics
+- API explanations should be used as an aid to human judgment, not a replacement for critical thinking
+- API keys must be kept secure and may incur usage charges from Groq
