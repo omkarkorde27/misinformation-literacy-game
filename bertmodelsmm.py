@@ -27,18 +27,35 @@ plt.pie(label_size, explode=[0.1, 0.1], colors=['firebrick', 'navy'],
 plt.title('Class Distribution')
 plt.show()
 
-# Combine content with explanation to provide more context
-# Since explanations provide clues about fakeness, this can help the model learn
-data['Full_Text'] = data['Content'].fillna('') + ' ' + data['Explanation'].fillna('')
+# Use only content as feature - removed explanation to prevent data leakage
+# Also implement text preprocessing
+def preprocess_text(text):
+    if pd.isna(text):
+        return ""
+    # Convert to lowercase
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r'http\S+', '', text)
+    # Remove special characters but keep spaces and basic punctuation
+    text = re.sub(r'[^\w\s.,!?]', '', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+# Import regex module
+import re
+
+# Apply preprocessing
+data['Feature_Text'] = data['Content'].apply(preprocess_text)
 
 # Train-Validation-Test set split into 70:15:15 ratio
 # Train-Temp split
 train_text, temp_text, train_labels, temp_labels = train_test_split(
-    data['Full_Text'], 
+    data['Feature_Text'], 
     data['Target'],
     random_state=2018,
     test_size=0.3,
-    stratify=data['Label']
+    stratify=data['Target']  # Stratify by Target instead of Label
 )
 
 # Validation-Test split
@@ -62,8 +79,8 @@ plt.ylabel('Number of texts')
 plt.title('Distribution of Text Lengths')
 plt.show()
 
-# Based on the histogram, increase MAX_LENGTH to capture more context
-MAX_LENGTH = 64  # Increased from 15 to capture more content
+# Determine MAX_LENGTH based on distribution
+MAX_LENGTH = 128  # Increased to better capture news content
 
 # Tokenize and encode sequences
 def tokenize_and_encode(texts):
@@ -74,9 +91,6 @@ def tokenize_and_encode(texts):
         truncation=True,
         return_tensors='pt'
     )
-    # Ensure correct dtype
-    encodings['input_ids'] = encodings['input_ids'].to(dtype=torch.int64)
-    encodings['attention_mask'] = encodings['attention_mask'].to(dtype=torch.int64)
     return encodings
 
 # Process datasets
@@ -84,27 +98,27 @@ train_encodings = tokenize_and_encode(train_text)
 val_encodings = tokenize_and_encode(val_text)
 test_encodings = tokenize_and_encode(test_text)
 
-# Create PyTorch datasets - ensure all tensors have proper types
+# Create PyTorch datasets
 train_dataset = TensorDataset(
-    train_encodings['input_ids'].to(torch.int64),
-    train_encodings['attention_mask'].to(torch.int64),
+    train_encodings['input_ids'],
+    train_encodings['attention_mask'],
     torch.tensor(train_labels.tolist(), dtype=torch.long)
 )
 
 val_dataset = TensorDataset(
-    val_encodings['input_ids'].to(torch.int64),
-    val_encodings['attention_mask'].to(torch.int64),
+    val_encodings['input_ids'],
+    val_encodings['attention_mask'],
     torch.tensor(val_labels.tolist(), dtype=torch.long)
 )
 
 test_dataset = TensorDataset(
-    test_encodings['input_ids'].to(torch.int64),
-    test_encodings['attention_mask'].to(torch.int64),
+    test_encodings['input_ids'],
+    test_encodings['attention_mask'],
     torch.tensor(test_labels.tolist(), dtype=torch.long)
 )
 
 # Data loaders
-batch_size = 16  # Reduced batch size to accommodate longer sequences
+batch_size = 16
 train_dataloader = DataLoader(
     train_dataset,
     sampler=RandomSampler(train_dataset),
@@ -123,7 +137,8 @@ test_dataloader = DataLoader(
     batch_size=batch_size
 )
 
-# Unfreeze the last 2 layers of BERT
+# Freeze most of BERT to reduce overfitting
+# Only unfreeze the last 2 layers and pooler
 for name, param in bert.named_parameters():
     if "encoder.layer.10" in name or "encoder.layer.11" in name or "pooler" in name:
         param.requires_grad = True
@@ -139,68 +154,48 @@ class_weights = torch.tensor([
     1.0 / (class_1_samples / total_samples)
 ], dtype=torch.float32).to(device)
 
-# Improved BERT architecture with more complex classification head
-class BERT_Improved(nn.Module):
-    def __init__(self, bert, dropout_rate=0.3):
-        super(BERT_Improved, self).__init__()
+# Simplified BERT architecture with better regularization
+class BERT_Classifier(nn.Module):
+    def __init__(self, bert, dropout_rate=0.7):  # Even more aggressive dropout
+        super(BERT_Classifier, self).__init__()
         self.bert = bert
         
-        # More sophisticated classification head
+        # Extremely simplified classification head with very strong regularization
         self.dropout1 = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(768, 512)
-        self.bn1 = nn.BatchNorm1d(512)
-        
+        self.fc1 = nn.Linear(768, 64)  # Much smaller intermediate layer
         self.dropout2 = nn.Dropout(dropout_rate)
-        self.fc2 = nn.Linear(512, 256)
-        self.bn2 = nn.BatchNorm1d(256)
-        
-        self.dropout3 = nn.Dropout(dropout_rate)
-        self.fc3 = nn.Linear(256, 2)
+        self.fc2 = nn.Linear(64, 2)
         
     def forward(self, input_ids, attention_mask):
-        # Make sure inputs are the right dtype
-        input_ids = input_ids.to(dtype=torch.int64)
-        attention_mask = attention_mask.to(dtype=torch.int64)
-        
         # Get BERT embeddings
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         pooled_output = outputs.pooler_output
         
-        # First dense layer with batch normalization
+        # Apply heavy dropout at every step
         x = self.dropout1(pooled_output)
-        x = self.fc1(x)
-        x = self.bn1(x)
-        x = F.relu(x)
-        
-        # Second dense layer with batch normalization
+        x = F.relu(self.fc1(x))
         x = self.dropout2(x)
         x = self.fc2(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-        
-        # Output layer
-        x = self.dropout3(x)
-        x = self.fc3(x)
         
         return F.log_softmax(x, dim=1)
 
 # Initialize model
-model = BERT_Improved(bert)
+model = BERT_Classifier(bert)
 model = model.to(device)
 
-# Define optimizer
+# Define optimizer with stronger weight decay for regularization
 optimizer = torch.optim.AdamW(
     [p for p in model.parameters() if p.requires_grad],
-    lr=2e-5,  # Slightly lower learning rate
-    weight_decay=0.01  # L2 regularization
+    lr=1e-5,  # Lower learning rate
+    weight_decay=0.1  # Stronger L2 regularization
 )
 
-# Create learning rate scheduler
-num_epochs = 15  # Increased from 10
+# Create learning rate scheduler with warmup
+num_epochs = 10  # Reduced to prevent overfitting
 total_steps = len(train_dataloader) * num_epochs
 scheduler = get_linear_schedule_with_warmup(
     optimizer,
-    num_warmup_steps=int(0.1 * total_steps),  # 10% of total steps as warmup
+    num_warmup_steps=int(0.1 * total_steps),
     num_training_steps=total_steps
 )
 
@@ -217,10 +212,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, device):
     for batch in dataloader:
         optimizer.zero_grad()
         
-        # Ensure correct dtype when transferring to device
-        input_ids = batch[0].to(device, dtype=torch.int64)
-        attention_mask = batch[1].to(device, dtype=torch.int64)
-        labels = batch[2].to(device, dtype=torch.long)
+        input_ids = batch[0].to(device)
+        attention_mask = batch[1].to(device)
+        labels = batch[2].to(device)
         
         outputs = model(input_ids, attention_mask)
         
@@ -253,10 +247,9 @@ def evaluate(model, dataloader, criterion, device):
     
     with torch.no_grad():
         for batch in dataloader:
-            # Ensure correct dtype when transferring to device
-            input_ids = batch[0].to(device, dtype=torch.int64)
-            attention_mask = batch[1].to(device, dtype=torch.int64)
-            labels = batch[2].to(device, dtype=torch.long)
+            input_ids = batch[0].to(device)
+            attention_mask = batch[1].to(device)
+            labels = batch[2].to(device)
             
             outputs = model(input_ids, attention_mask)
             
@@ -275,7 +268,7 @@ def evaluate(model, dataloader, criterion, device):
 
 # Early stopping parameters
 early_stopping_patience = 3
-best_val_loss = float('inf')
+best_val_f1 = 0  # Track F1 score instead of loss for early stopping
 early_stopping_counter = 0
 
 # Training loop with early stopping
@@ -300,9 +293,9 @@ for epoch in range(num_epochs):
     print(f'Training Loss: {train_loss:.4f}, Training F1: {train_f1:.4f}')
     print(f'Validation Loss: {val_loss:.4f}, Validation F1: {val_f1:.4f}')
     
-    # Check if this is the best model so far
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
+    # Check if this is the best model so far based on F1 score
+    if val_f1 > best_val_f1:
+        best_val_f1 = val_f1
         # Save the model
         torch.save(model.state_dict(), 'best_bert_model.pt')
         print("Model saved!")
@@ -377,9 +370,8 @@ def predict_fakeness(text_list):
         return_tensors='pt'
     )
     
-    # Ensure correct dtype when transferring to device
-    input_ids = encodings['input_ids'].to(device, dtype=torch.int64)
-    attention_mask = encodings['attention_mask'].to(device, dtype=torch.int64)
+    input_ids = encodings['input_ids'].to(device)
+    attention_mask = encodings['attention_mask'].to(device)
     
     with torch.no_grad():
         outputs = model(input_ids, attention_mask)
@@ -410,3 +402,157 @@ for pred in predictions:
     print(f"Headline: {pred['text']}")
     print(f"Prediction: {pred['prediction']} (Confidence: {pred['confidence']})")
     print("-" * 80)
+
+# Implement K-fold cross-validation for better model evaluation
+from sklearn.model_selection import KFold
+
+def perform_kfold_validation(data, num_folds=5):
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+    
+    fold_results = []
+    
+    # Combine data and labels for folding
+    texts = data['Feature_Text'].values
+    labels = data['Target'].values
+    
+    for fold, (train_idx, val_idx) in enumerate(kf.split(texts)):
+        print(f"\nTraining fold {fold+1}/{num_folds}")
+        
+        # Split data for this fold
+        fold_train_texts = texts[train_idx]
+        fold_train_labels = labels[train_idx]
+        fold_val_texts = texts[val_idx]
+        fold_val_labels = labels[val_idx]
+        
+        # Convert to pandas Series to maintain compatibility with existing code
+        fold_train_texts = pd.Series(fold_train_texts)
+        fold_train_labels = pd.Series(fold_train_labels)
+        fold_val_texts = pd.Series(fold_val_texts)
+        fold_val_labels = pd.Series(fold_val_labels)
+        
+        # Process data for this fold
+        fold_train_encodings = tokenize_and_encode(fold_train_texts)
+        fold_val_encodings = tokenize_and_encode(fold_val_texts)
+        
+        # Create datasets and dataloaders
+        fold_train_dataset = TensorDataset(
+            fold_train_encodings['input_ids'],
+            fold_train_encodings['attention_mask'],
+            torch.tensor(fold_train_labels.tolist(), dtype=torch.long)
+        )
+        
+        fold_val_dataset = TensorDataset(
+            fold_val_encodings['input_ids'],
+            fold_val_encodings['attention_mask'],
+            torch.tensor(fold_val_labels.tolist(), dtype=torch.long)
+        )
+        
+        fold_train_dataloader = DataLoader(
+            fold_train_dataset,
+            sampler=RandomSampler(fold_train_dataset),
+            batch_size=batch_size
+        )
+        
+        fold_val_dataloader = DataLoader(
+            fold_val_dataset,
+            sampler=SequentialSampler(fold_val_dataset),
+            batch_size=batch_size
+        )
+        
+        # Initialize new model for this fold
+        fold_bert = AutoModel.from_pretrained('bert-base-uncased')
+        # Apply same freezing pattern as before
+        for name, param in fold_bert.named_parameters():
+            if "encoder.layer.10" in name or "encoder.layer.11" in name or "pooler" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+                
+        fold_model = BERT_Classifier(fold_bert)
+        fold_model = fold_model.to(device)
+        
+        # Create optimizer and scheduler
+        fold_optimizer = torch.optim.AdamW(
+            [p for p in fold_model.parameters() if p.requires_grad],
+            lr=1e-5,
+            weight_decay=0.1
+        )
+        
+        fold_total_steps = len(fold_train_dataloader) * 5  # 5 epochs per fold
+        fold_scheduler = get_linear_schedule_with_warmup(
+            fold_optimizer,
+            num_warmup_steps=int(0.1 * fold_total_steps),
+            num_training_steps=fold_total_steps
+        )
+        
+        # Train for a few epochs
+        best_val_f1 = 0
+        
+        for epoch in range(5):  # 5 epochs per fold
+            # Train
+            train_loss, train_f1 = train_epoch(fold_model, fold_train_dataloader, fold_optimizer, fold_scheduler, criterion, device)
+            
+            # Evaluate
+            val_loss, val_f1, _, _ = evaluate(fold_model, fold_val_dataloader, criterion, device)
+            
+            print(f'Fold {fold+1}, Epoch {epoch+1}: Train F1 = {train_f1:.4f}, Val F1 = {val_f1:.4f}')
+            
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+        
+        # Store fold results
+        fold_results.append({
+            'fold': fold+1,
+            'best_val_f1': best_val_f1
+        })
+    
+    # Compute average F1 across all folds
+    avg_f1 = sum(result['best_val_f1'] for result in fold_results) / num_folds
+    print(f"\nCross-validation complete. Average F1 score: {avg_f1:.4f}")
+    
+    return fold_results
+
+# Additional function to collect misclassifications
+def collect_misclassifications(model, dataloader, device):
+    model.eval()
+    misclassified = []
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch[0].to(device)
+            attention_mask = batch[1].to(device)
+            labels = batch[2].to(device)
+            
+            outputs = model(input_ids, attention_mask)
+            _, preds = torch.max(outputs, dim=1)
+            
+            # Find indices of misclassified examples
+            misclassified_idx = (preds != labels).nonzero(as_tuple=True)[0]
+            
+            for idx in misclassified_idx:
+                misclassified.append({
+                    "text_idx": idx.item(),
+                    "true_label": labels[idx].item(),
+                    "predicted": preds[idx].item(),
+                    "confidence": torch.exp(outputs[idx, preds[idx]]).item()
+                })
+    
+    return misclassified
+
+# Analyze misclassifications in test set
+test_misclassified = collect_misclassifications(model, test_dataloader, device)
+print(f"Number of misclassified examples: {len(test_misclassified)}")
+
+# Print some examples of misclassified texts if available
+if test_misclassified:
+    print("\nExamples of misclassified texts:")
+    for i, misc in enumerate(test_misclassified[:5]):  # Show first 5 misclassifications
+        idx = misc["text_idx"]
+        batch_idx = idx // batch_size
+        item_idx = idx % batch_size
+        # Get the original text from test_text
+        text = test_text.iloc[batch_idx * batch_size + item_idx]
+        true_label = "Fake" if misc["true_label"] == 1 else "Real"
+        pred_label = "Fake" if misc["predicted"] == 1 else "Real"
+        print(f"{i+1}. Text: {text[:100]}...")
+        print(f"   True: {true_label}, Predicted: {pred_label}, Confidence: {misc['confidence']:.2%}")
