@@ -15,6 +15,7 @@ import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time
 
 # For text processing
 import nltk
@@ -583,6 +584,53 @@ class BERTFakeNewsDetector:
         
         return True
     
+    def predict(self, text, threshold=0.5):
+        """
+        Predict whether the given text is fake news or real news
+        
+        Args:
+            text (str): The news text to classify
+            threshold (float): Confidence threshold for classifying as fake news
+            
+        Returns:
+            tuple: (label, confidence) where label is either "Real News" or "Fake News" 
+                and confidence is a float between 0 and 1
+        """
+        # Ensure model is in evaluation mode
+        self.model.eval()
+        
+        # Preprocess the input text
+        processed_text = preprocess_text(text)
+        
+        # Tokenize the text
+        encoding = self.tokenizer.encode_plus(
+            processed_text,
+            add_special_tokens=True,
+            max_length=self.max_length,
+            return_token_type_ids=False,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        
+        # Move tensors to the appropriate device
+        input_ids = encoding['input_ids'].to(device)
+        attention_mask = encoding['attention_mask'].to(device)
+        
+        # Get prediction
+        with torch.no_grad():
+            outputs = self.model(input_ids, attention_mask)
+            probabilities = torch.exp(outputs)  # Convert log_softmax to probabilities
+            _, preds = torch.max(outputs, dim=1)
+            confidence = probabilities[0][preds].item()
+        
+        # Map prediction to label
+        if preds.item() == 1:
+            return "Fake News", confidence
+        else:
+            return "Real News", confidence
+
     def _train_with_split(self, texts, labels, class_weights, batch_size=16, epochs=10, 
                            learning_rate=2e-5, test_size=0.2, random_state=42, use_augmentation=True):
         """Train model using a simple train/val/test split"""
@@ -788,7 +836,6 @@ class BERTFakeNewsDetector:
         print("\nClassification Report:")
         print(classification_report(test_true_labels, test_preds, target_names=['Real News', 'Fake News']))
         
-        # Create confusion matrix
         cm = confusion_matrix(test_true_labels, test_preds)
         plt.figure(figsize=(8, 6))
         plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
@@ -803,13 +850,22 @@ class BERTFakeNewsDetector:
         for i in range(cm.shape[0]):
             for j in range(cm.shape[1]):
                 plt.text(j, i, format(cm[i, j], 'd'),
-                         horizontalalignment="center",
-                         color="white" if cm[i, j] > thresh else "black")
+                        horizontalalignment="center",
+                        color="white" if cm[i, j] > thresh else "black")
         
         plt.ylabel('True label')
         plt.xlabel('Predicted label')
         plt.tight_layout()
-        plt.show()
+        
+        # Save the plot instead of displaying it
+        try:
+            plot_path = f'confusion_matrix_{time.strftime("%Y%m%d-%H%M%S")}.png'
+            plt.savefig(plot_path)
+            print(f"Confusion matrix saved to {plot_path}")
+            plt.close()  # Close the plot to avoid displaying it
+        except Exception as e:
+            print(f"Could not save confusion matrix plot: {e}")
+            plt.close()  # Make sure to close the plot even if saving fails
         
         # Store training stats
         self.training_stats = training_stats
